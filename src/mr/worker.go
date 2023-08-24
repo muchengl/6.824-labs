@@ -1,10 +1,16 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
-
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,44 +30,164 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	for true {
+		worker(mapf, reducef)
+		time.Sleep(time.Second / 10)
+	}
+}
 
 //
 // main/mrworker.go calls this function.
 //
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
+func worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	args := TaskGetArgs{}
 
-	// Your worker implementation here.
+	nReduce := NReduce{}
+	callGetNReduce(&args, &nReduce)
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	reply := TaskReply{}
+	callGetTask(&args, &reply)
+
+	// read file here
+	if reply.ReduceTaskIdx != -1 {
+		//println("finish all file process")
+		// do reduce
+		filename := reply.ReduceFileName
+		content := readFile(filename)
+
+		// group content by key
+		arr := strings.Split(content, "\n")
+		//println("len", len(arr))
+		var kvs [][]string
+
+		for _, v := range arr {
+			//println("word:", v)
+			if v == "" {
+				continue
+			}
+			kv := strings.Split(v, " ")
+			kvs = append(kvs, []string{kv[0], kv[1]})
+		}
+
+		kvsMap := map[string][]string{}
+		for _, v := range kvs {
+			kvsMap[v[0]] = append(kvsMap[v[0]], v[1])
+		}
+
+		oname := "mr-out-0"
+		for s, v := range kvsMap {
+			ss := reducef(s, v)
+			writeFile(oname, s+" "+ss+"\n")
+			//println("KV: ", s, " ", ss)
+		}
+
+		callFinishMapTask(&TaskGetArgs{
+			Idx: reply.ReduceTaskIdx,
+		}, &TaskFinishReply{})
+
+	} else if reply.MapTaskIdx != -1 {
+		println("ready to read: ", reply.MapFilename)
+		filename := reply.MapFilename
+
+		// read file
+		content := readFile(filename)
+
+		// do map
+		res := mapf(filename, content)
+
+		// write kv into a tmp file
+		for _, v := range res {
+			taskNum := ihash(v.Key) % nReduce.N
+			writeFile(strconv.Itoa(taskNum)+".txt", v.Key+" "+v.Value+"\n")
+		}
+
+		// send reduce task back to master
+		callFinishMapTask(&TaskGetArgs{
+			Idx: reply.MapTaskIdx,
+		}, &TaskFinishReply{})
+	}
 
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func readFile(filename string) string {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	return string(content)
+}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+func writeFile(filename string, ctx string) {
+	//// delete if exist
+	//e, _ := exists(filename)
+	//if e {
+	//	err := os.Remove(filename)
+	//	if err != nil {
+	//		log.Fatalf("can't delete %s,  %v \n", filename, err)
+	//	}
+	//}
 
-	// fill in the argument(s).
-	args.X = 99
+	// create and open
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+	_, err = file.Write([]byte(ctx))
+	if err != nil {
+		log.Fatalf("can't write %s,  %v \n", filename, err)
+	}
+	file.Close()
+}
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return true, err
+}
+
+func callGetTask(args *TaskGetArgs, reply *TaskReply) {
+	ok := call("Coordinator.GetTask", args, reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		fmt.Printf("Get Task %d %d\n", reply.MapTaskIdx, reply.ReduceTaskIdx)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
+}
+
+func callGetNReduce(args *TaskGetArgs, reply *NReduce) {
+	ok := call("Coordinator.GetNReduce", args, reply)
+	if ok {
+		fmt.Printf("NReduce %d\n", reply.N)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
+}
+
+func callFinishMapTask(args *TaskGetArgs, reply *TaskFinishReply) {
+	ok := call("Coordinator.FinishMapTask", args, reply)
+	if ok {
+		fmt.Printf("Finish Map Task:  %d\n", args.Idx)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
+}
+
+func callFinishReduceTask(args *TaskGetArgs, reply *TaskFinishReply) {
+	ok := call("Coordinator.FinishReduceTask", args, reply)
+	if ok {
+		fmt.Printf("Finish Map Task:  %d\n", args.Idx)
 	} else {
 		fmt.Printf("call failed!\n")
 	}
