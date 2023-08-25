@@ -1,12 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 import "log"
 import "net/rpc"
@@ -32,82 +34,133 @@ func ihash(key string) int {
 
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	for true {
-		worker(mapf, reducef)
-		time.Sleep(time.Second / 10)
+		if worker(mapf, reducef) == 0 {
+			return
+		}
 	}
 }
 
 //
 // main/mrworker.go calls this function.
 //
-func worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+func worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) int {
 	args := TaskGetArgs{}
-
-	nReduce := NReduce{}
-	callGetNReduce(&args, &nReduce)
-
 	reply := TaskReply{}
 	callGetTask(&args, &reply)
 
 	// read file here
 	if reply.ReduceTaskIdx != -1 {
-		//println("finish all file process")
-		// do reduce
-		filename := reply.ReduceFileName
-		content := readFile(filename)
-
-		// group content by key
-		arr := strings.Split(content, "\n")
-		//println("len", len(arr))
-		var kvs [][]string
-
-		for _, v := range arr {
-			//println("word:", v)
-			if v == "" {
-				continue
-			}
-			kv := strings.Split(v, " ")
-			kvs = append(kvs, []string{kv[0], kv[1]})
-		}
-
-		kvsMap := map[string][]string{}
-		for _, v := range kvs {
-			kvsMap[v[0]] = append(kvsMap[v[0]], v[1])
-		}
-
-		oname := "mr-out-0"
-		for s, v := range kvsMap {
-			ss := reducef(s, v)
-			writeFile(oname, s+" "+ss+"\n")
-			//println("KV: ", s, " ", ss)
-		}
-
-		callFinishMapTask(&TaskGetArgs{
-			Idx: reply.ReduceTaskIdx,
-		}, &TaskFinishReply{})
+		Reduce(reducef, args, reply)
+		return 1
 
 	} else if reply.MapTaskIdx != -1 {
-		println("ready to read: ", reply.MapFilename)
-		filename := reply.MapFilename
+		Map(mapf, args, reply)
+		return 1
+	} else {
+		log.Default().Printf("Finish all process!!!")
 
-		// read file
-		content := readFile(filename)
+		// delete all mid files
+		//for i := 0; i < nReduce.N; i++ {
+		//	filename := strconv.Itoa(i) + ".txt"
+		//	e, _ := exists(filename)
+		//	if e {
+		//		err := os.Remove(filename)
+		//		if err != nil {
+		//			log.Fatalf("can't delete %s,  %v \n", filename, err)
+		//		}
+		//	}
+		//}
 
-		// do map
-		res := mapf(filename, content)
+		return 0
+	}
+}
 
-		// write kv into a tmp file
-		for _, v := range res {
-			taskNum := ihash(v.Key) % nReduce.N
-			writeFile(strconv.Itoa(taskNum)+".txt", v.Key+" "+v.Value+"\n")
-		}
+func Map(mapf func(string, string) []KeyValue, args TaskGetArgs, reply TaskReply) {
+	println("Map: ", reply.MapFilename)
 
-		// send reduce task back to master
-		callFinishMapTask(&TaskGetArgs{
-			Idx: reply.MapTaskIdx,
-		}, &TaskFinishReply{})
+	nReduce := NReduce{}
+	callGetNReduce(&args, &nReduce)
+
+	filename := reply.MapFilename
+
+	// read file
+	content := readFile(filename)
+
+	// do map
+	res := mapf(filename, content)
+
+	// write kv into a tmp file
+	uuid := uuid.New()
+	fileNames := map[int]string{}
+
+	for _, v := range res {
+		taskNum := ihash(v.Key) % nReduce.N
+
+		fn := strconv.Itoa(taskNum) + "-" + uuid.String() + ".txt"
+		fileNames[taskNum] = fn
+
+		writeFile(fn, v.Key+" "+v.Value+"\n")
 	}
 
+	// send reduce task back to master
+	fns, _ := json.Marshal(fileNames)
+	//println(string(fns))
+	callFinishMapTask(&TaskGetArgs{
+		Idx:       reply.MapTaskIdx,
+		FileNames: string(fns),
+	}, &TaskFinishReply{})
+
+}
+
+func Reduce(reducef func(string, []string) string, args TaskGetArgs, reply TaskReply) {
+	log.Default().Printf("Reduce: %d", reply.ReduceTaskIdx)
+
+	fns := reply.ReduceFileNames
+	fileNames := []string{}
+	json.Unmarshal([]byte(fns), &fileNames)
+
+	content := ""
+	for _, v := range fileNames {
+		//println("READ: ", v)
+		content += readFile(v)
+	}
+
+	// group content by key
+	arr := strings.Split(content, "\n")
+	var kvs [][]string
+	for _, v := range arr {
+		//println("word:", v)
+		if v == "" {
+			continue
+		}
+		kv := strings.Split(v, " ")
+		kvs = append(kvs, []string{kv[0], kv[1]})
+	}
+
+	sort.Slice(kvs, func(i, j int) bool {
+		return kvs[i][0] < kvs[j][0]
+	})
+
+	kvsMap := map[string][]string{}
+	for _, v := range kvs {
+		kvsMap[v[0]] = append(kvsMap[v[0]], v[1])
+	}
+
+	oname := "mr-out-" + strconv.Itoa(reply.ReduceTaskIdx)
+
+	preKey := ""
+	for _, v := range kvs {
+		if v[0] != preKey {
+			preKey = v[0]
+			ss := reducef(v[0], kvsMap[v[0]])
+			//println("write: ", v[0]+" "+ss+"\n")
+			writeFile(oname, v[0]+" "+ss+"\n")
+		}
+	}
+
+	callFinishReduceTask(&TaskGetArgs{
+		Idx: reply.ReduceTaskIdx,
+	}, &TaskFinishReply{})
 }
 
 func readFile(filename string) string {
@@ -124,15 +177,6 @@ func readFile(filename string) string {
 }
 
 func writeFile(filename string, ctx string) {
-	//// delete if exist
-	//e, _ := exists(filename)
-	//if e {
-	//	err := os.Remove(filename)
-	//	if err != nil {
-	//		log.Fatalf("can't delete %s,  %v \n", filename, err)
-	//	}
-	//}
-
 	// create and open
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
@@ -160,7 +204,7 @@ func exists(path string) (bool, error) {
 func callGetTask(args *TaskGetArgs, reply *TaskReply) {
 	ok := call("Coordinator.GetTask", args, reply)
 	if ok {
-		fmt.Printf("Get Task %d %d\n", reply.MapTaskIdx, reply.ReduceTaskIdx)
+		//fmt.Printf("Get Task %d %d\n", reply.MapTaskIdx, reply.ReduceTaskIdx)
 	} else {
 		fmt.Printf("call failed!\n")
 	}
@@ -169,7 +213,7 @@ func callGetTask(args *TaskGetArgs, reply *TaskReply) {
 func callGetNReduce(args *TaskGetArgs, reply *NReduce) {
 	ok := call("Coordinator.GetNReduce", args, reply)
 	if ok {
-		fmt.Printf("NReduce %d\n", reply.N)
+		//fmt.Printf("NReduce %d\n", reply.N)
 	} else {
 		fmt.Printf("call failed!\n")
 	}
@@ -178,7 +222,7 @@ func callGetNReduce(args *TaskGetArgs, reply *NReduce) {
 func callFinishMapTask(args *TaskGetArgs, reply *TaskFinishReply) {
 	ok := call("Coordinator.FinishMapTask", args, reply)
 	if ok {
-		fmt.Printf("Finish Map Task:  %d\n", args.Idx)
+		//fmt.Printf("Finish Map Task:  %d\n", args.Idx)
 	} else {
 		fmt.Printf("call failed!\n")
 	}
@@ -187,7 +231,7 @@ func callFinishMapTask(args *TaskGetArgs, reply *TaskFinishReply) {
 func callFinishReduceTask(args *TaskGetArgs, reply *TaskFinishReply) {
 	ok := call("Coordinator.FinishReduceTask", args, reply)
 	if ok {
-		fmt.Printf("Finish Map Task:  %d\n", args.Idx)
+		//fmt.Printf("Finish Reduce Task:  %d\n", args.Idx)
 	} else {
 		fmt.Printf("call failed!\n")
 	}

@@ -10,7 +10,8 @@ import "os"
 import "strconv"
 
 type TaskGetArgs struct {
-	Idx int
+	Idx       int
+	FileNames string
 }
 
 type NReduce struct {
@@ -18,13 +19,11 @@ type NReduce struct {
 }
 
 type TaskReply struct {
-	// idx=-1 reduce task
-	// idx>=0 map task
 	MapTaskIdx  int
 	MapFilename string
 
-	ReduceTaskIdx  int
-	ReduceFileName string
+	ReduceTaskIdx   int
+	ReduceFileNames string
 }
 
 type TaskFinishReply struct {

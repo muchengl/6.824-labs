@@ -1,8 +1,11 @@
 package mr
 
 import (
+	"encoding/json"
 	"log"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 )
 import "net"
@@ -20,7 +23,7 @@ type mapTask struct {
 }
 
 type reduceTask struct {
-	//fileName string
+	fileNames []string
 
 	// 0 haven't been process
 	// 1 finished process
@@ -44,7 +47,7 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 	// find an unprocessed task
 	for i, t := range c.mapTasks {
 		if t.status == 0 {
-			println("Find map task: ", i, " ", t.fileName)
+			//println("Find map task: ", i, " ", t.fileName)
 			reply.MapTaskIdx = i
 			reply.MapFilename = t.fileName
 
@@ -60,17 +63,16 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 	// choose a reduce task
 	for i, t := range c.reduceTasks {
 		if t.status == 0 {
-			println("Find reduce task: ", i)
-
 			reply.ReduceTaskIdx = i
-			reply.ReduceFileName = strconv.Itoa(i+1) + ".txt"
+			fns, _ := json.Marshal(t.fileNames)
+			reply.ReduceFileNames = string(fns)
 
 			t.status = -1
 			return nil
 		}
 	}
 	reply.ReduceTaskIdx = -1
-	reply.ReduceFileName = ""
+	reply.ReduceFileNames = ""
 
 	return nil
 }
@@ -79,7 +81,6 @@ func (c *Coordinator) GetNReduce(args *TaskGetArgs, reply *NReduce) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	println("nReduce:", c.nReduce)
 	reply.N = c.nReduce
 	return nil
 }
@@ -88,7 +89,14 @@ func (c *Coordinator) FinishMapTask(args *TaskGetArgs, reply *TaskFinishReply) e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	fns := map[int]string{}
+	json.Unmarshal([]byte(args.FileNames), &fns)
+	for k, v := range fns {
+		c.reduceTasks[k].fileNames = append(c.reduceTasks[k].fileNames, v)
+	}
+
 	c.mapTasks[args.Idx].status = 1
+
 	return nil
 }
 
@@ -97,6 +105,7 @@ func (c *Coordinator) FinishReduceTask(args *TaskGetArgs, reply *TaskFinishReply
 	defer c.mu.Unlock()
 
 	c.reduceTasks[args.Idx].status = 1
+
 	return nil
 }
 
@@ -136,6 +145,37 @@ func (c *Coordinator) Done() bool {
 		}
 	}
 
+	// sort
+	oname := "mr-wc-all"
+
+	content := ""
+	for i := 0; i < c.nReduce; i++ {
+		fn := "mr-out-" + strconv.Itoa(i)
+		content += readFile(fn)
+	}
+
+	// group content by key
+	arr := strings.Split(content, "\n")
+	var kvs [][]string
+
+	for _, v := range arr {
+		if v == "" {
+			continue
+		}
+		kv := strings.Split(v, " ")
+		kvs = append(kvs, []string{kv[0], kv[1]})
+	}
+
+	sort.Slice(kvs, func(i, j int) bool {
+		return kvs[i][0] < kvs[j][0]
+	})
+
+	os.Remove(oname)
+
+	for _, v := range kvs {
+		writeFile(oname, v[0]+" "+v[1]+"\n")
+	}
+
 	return true
 }
 
@@ -152,7 +192,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	for i := range c.mapTasks {
-		println("Init File ", i, files[i])
+		//println("Init File ", i, files[i])
 
 		c.mapTasks[i] = &mapTask{
 			fileName: files[i],
