@@ -60,9 +60,19 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 	reply.MapTaskIdx = -1
 	reply.MapFilename = ""
 
+	for _, t := range c.mapTasks {
+		if t.status != 1 {
+			reply.ReduceTaskIdx = -1
+			reply.ReduceFileNames = ""
+
+			return nil
+		}
+	}
+
 	// choose a reduce task
 	for i, t := range c.reduceTasks {
 		if t.status == 0 {
+			//println("Find reduce task: ", i)
 			reply.ReduceTaskIdx = i
 			fns, _ := json.Marshal(t.fileNames)
 			reply.ReduceFileNames = string(fns)
@@ -152,6 +162,7 @@ func (c *Coordinator) Done() bool {
 	for i := 0; i < c.nReduce; i++ {
 		fn := "mr-out-" + strconv.Itoa(i)
 		content += readFile(fn)
+		//os.Remove(content)
 	}
 
 	// group content by key

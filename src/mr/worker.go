@@ -57,7 +57,7 @@ func worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		Map(mapf, args, reply)
 		return 1
 	} else {
-		log.Default().Printf("Finish all process!!!")
+		//log.Default().Printf("Finish all process OR waiting for a reduce task !!!")
 
 		// delete all mid files
 		//for i := 0; i < nReduce.N; i++ {
@@ -76,7 +76,7 @@ func worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 }
 
 func Map(mapf func(string, string) []KeyValue, args TaskGetArgs, reply TaskReply) {
-	println("Map: ", reply.MapFilename)
+	//println("Map: ", reply.MapFilename)
 
 	nReduce := NReduce{}
 	callGetNReduce(&args, &nReduce)
@@ -113,7 +113,7 @@ func Map(mapf func(string, string) []KeyValue, args TaskGetArgs, reply TaskReply
 }
 
 func Reduce(reducef func(string, []string) string, args TaskGetArgs, reply TaskReply) {
-	log.Default().Printf("Reduce: %d", reply.ReduceTaskIdx)
+	//log.Default().Printf("Reduce: %d", reply.ReduceTaskIdx)
 
 	fns := reply.ReduceFileNames
 	fileNames := []string{}
@@ -153,7 +153,6 @@ func Reduce(reducef func(string, []string) string, args TaskGetArgs, reply TaskR
 		if v[0] != preKey {
 			preKey = v[0]
 			ss := reducef(v[0], kvsMap[v[0]])
-			//println("write: ", v[0]+" "+ss+"\n")
 			writeFile(oname, v[0]+" "+ss+"\n")
 		}
 	}
