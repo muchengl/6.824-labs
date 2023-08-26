@@ -243,7 +243,8 @@ then
 else
   # the -n causes wait to wait for just one child process,
   # rather than waiting for all to finish.
-  wait -n
+#  wait -n
+  wait
 fi
 
 rm -f $DF

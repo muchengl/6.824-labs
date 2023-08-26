@@ -69,6 +69,7 @@ type Coordinator struct {
 	reduceTasks []*reduceTask
 	nReduce     int
 	finalFiles  []string
+	exit        bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -88,7 +89,7 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 			t.status = -1
 
 			go func() {
-				time.Sleep(time.Second * 5)
+				time.Sleep(time.Second * 10)
 				c.monitor(t)
 			}()
 
@@ -119,7 +120,7 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 			t.status = -1
 
 			go func() {
-				time.Sleep(time.Second * 5)
+				time.Sleep(time.Second * 10)
 				c.monitor(t)
 			}()
 
@@ -171,6 +172,14 @@ func (c *Coordinator) FinishReduceTask(args *TaskGetArgs, reply *TaskFinishReply
 	c.reduceTasks[args.Idx].status = 1
 	c.finalFiles = append(c.finalFiles, args.FileNames)
 
+	return nil
+}
+
+func (c *Coordinator) CanExit(args *CanExitReq, reply *CanExitReply) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	reply.Flag = c.exit
 	return nil
 }
 
@@ -240,6 +249,10 @@ func (c *Coordinator) Done() bool {
 	for _, v := range kvs {
 		writeFile(oname, v[0]+" "+v[1]+"\n")
 	}
+
+	// waiting all workers exit
+	c.exit = true
+	time.Sleep(time.Second * 10)
 
 	return true
 }

@@ -35,7 +35,15 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	for true {
 		if worker(mapf, reducef) == 0 {
-			return
+
+			for true {
+				reply := CanExitReply{}
+				callExit(&CanExitReq{}, &reply)
+				if reply.Flag {
+					return
+				}
+			}
+
 		}
 	}
 }
@@ -146,7 +154,8 @@ func Reduce(reducef func(string, []string) string, args TaskGetArgs, reply TaskR
 		kvsMap[v[0]] = append(kvsMap[v[0]], v[1])
 	}
 
-	oname := "mr-out-" + strconv.Itoa(reply.ReduceTaskIdx)
+	oname := "mr-out-" + strconv.Itoa(reply.ReduceTaskIdx) + "-" + uuid.NewString()
+	//os.Remove(oname)
 
 	preKey := ""
 	for _, v := range kvs {
@@ -156,6 +165,10 @@ func Reduce(reducef func(string, []string) string, args TaskGetArgs, reply TaskR
 			writeFile(oname, v[0]+" "+ss+"\n")
 		}
 	}
+
+	// rename it to final file
+	os.Rename(oname, "mr-out-"+strconv.Itoa(reply.ReduceTaskIdx))
+	oname = "mr-out-" + strconv.Itoa(reply.ReduceTaskIdx)
 
 	callFinishReduceTask(&TaskGetArgs{
 		Idx:       reply.ReduceTaskIdx,
@@ -230,6 +243,15 @@ func callFinishMapTask(args *TaskGetArgs, reply *TaskFinishReply) {
 
 func callFinishReduceTask(args *TaskGetArgs, reply *TaskFinishReply) {
 	ok := call("Coordinator.FinishReduceTask", args, reply)
+	if ok {
+		//fmt.Printf("Finish Reduce Task:  %d\n", args.Idx)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
+}
+
+func callExit(args *CanExitReq, reply *CanExitReply) {
+	ok := call("Coordinator.CanExit", args, reply)
 	if ok {
 		//fmt.Printf("Finish Reduce Task:  %d\n", args.Idx)
 	} else {
