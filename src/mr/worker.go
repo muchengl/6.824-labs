@@ -158,7 +158,8 @@ func Reduce(reducef func(string, []string) string, args TaskGetArgs, reply TaskR
 	}
 
 	callFinishReduceTask(&TaskGetArgs{
-		Idx: reply.ReduceTaskIdx,
+		Idx:       reply.ReduceTaskIdx,
+		FileNames: oname,
 	}, &TaskFinishReply{})
 }
 

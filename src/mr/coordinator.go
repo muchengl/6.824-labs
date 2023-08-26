@@ -4,16 +4,22 @@ import (
 	"encoding/json"
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
+type task interface {
+	getStatus() int
+	setStatus(s int)
+}
+
 type mapTask struct {
+	mu       sync.RWMutex
 	fileName string
 
 	// 0 haven't been process
@@ -22,7 +28,20 @@ type mapTask struct {
 	status int
 }
 
+func (m *mapTask) getStatus() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status
+}
+
+func (m *mapTask) setStatus(s int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status = s
+}
+
 type reduceTask struct {
+	mu        sync.RWMutex
 	fileNames []string
 
 	// 0 haven't been process
@@ -31,12 +50,25 @@ type reduceTask struct {
 	status int
 }
 
+func (m *reduceTask) getStatus() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.status
+}
+
+func (m *reduceTask) setStatus(s int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status = s
+}
+
 type Coordinator struct {
 	// Your definitions here.
 	mu          sync.RWMutex
 	mapTasks    []*mapTask
 	reduceTasks []*reduceTask
 	nReduce     int
+	finalFiles  []string
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -44,7 +76,7 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// find an unprocessed task
+	// find an unprocessed map task
 	for i, t := range c.mapTasks {
 		if t.status == 0 {
 			//println("Find map task: ", i, " ", t.fileName)
@@ -54,12 +86,19 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 			reply.ReduceTaskIdx = -1
 
 			t.status = -1
+
+			go func() {
+				time.Sleep(time.Second * 5)
+				c.monitor(t)
+			}()
+
 			return nil
 		}
 	}
 	reply.MapTaskIdx = -1
 	reply.MapFilename = ""
 
+	// make sure all map task finished
 	for _, t := range c.mapTasks {
 		if t.status != 1 {
 			reply.ReduceTaskIdx = -1
@@ -78,6 +117,12 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 			reply.ReduceFileNames = string(fns)
 
 			t.status = -1
+
+			go func() {
+				time.Sleep(time.Second * 5)
+				c.monitor(t)
+			}()
+
 			return nil
 		}
 	}
@@ -85,6 +130,15 @@ func (c *Coordinator) GetTask(args *TaskGetArgs, reply *TaskReply) error {
 	reply.ReduceFileNames = ""
 
 	return nil
+}
+
+func (c *Coordinator) monitor(t task) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if t.getStatus() != 1 {
+		t.setStatus(0)
+	}
 }
 
 func (c *Coordinator) GetNReduce(args *TaskGetArgs, reply *NReduce) error {
@@ -115,6 +169,7 @@ func (c *Coordinator) FinishReduceTask(args *TaskGetArgs, reply *TaskFinishReply
 	defer c.mu.Unlock()
 
 	c.reduceTasks[args.Idx].status = 1
+	c.finalFiles = append(c.finalFiles, args.FileNames)
 
 	return nil
 }
@@ -140,8 +195,8 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	for _, v := range c.mapTasks {
 		if v.status != 1 {
@@ -159,10 +214,9 @@ func (c *Coordinator) Done() bool {
 	oname := "mr-wc-all"
 
 	content := ""
-	for i := 0; i < c.nReduce; i++ {
-		fn := "mr-out-" + strconv.Itoa(i)
+	for i := 0; i < len(c.finalFiles); i++ {
+		fn := c.finalFiles[i]
 		content += readFile(fn)
-		//os.Remove(content)
 	}
 
 	// group content by key
